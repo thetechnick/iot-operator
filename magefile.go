@@ -1,0 +1,428 @@
+//go:build mage
+// +build mage
+
+package main
+
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
+	"os/exec"
+	"path"
+	goruntime "runtime"
+	"strings"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/go-logr/stdr"
+	"github.com/magefile/mage/mg"
+	"github.com/magefile/mage/sh"
+	"github.com/mt-sre/devkube/magedeps"
+	appsv1 "k8s.io/api/apps/v1"
+	"sigs.k8s.io/yaml"
+)
+
+const (
+	module          = "github.com/thetechnick/iot-operator"
+	defaultImageOrg = "quay.io/nico_schieder"
+)
+
+// Directories
+var (
+	// Working directory of the project.
+	workDir string
+	// Dependency directory.
+	depsDir  magedeps.DependencyDirectory
+	cacheDir string
+
+	logger           logr.Logger
+	containerRuntime string
+)
+
+func init() {
+	var err error
+	// Directories
+	workDir, err = os.Getwd()
+	if err != nil {
+		panic(fmt.Errorf("getting work dir: %w", err))
+	}
+	cacheDir = path.Join(workDir + "/" + ".cache")
+	depsDir = magedeps.DependencyDirectory(path.Join(workDir, ".deps"))
+	os.Setenv("PATH", depsDir.Bin()+":"+os.Getenv("PATH"))
+
+	logger = stdr.New(nil)
+	containerRuntime = os.Getenv("CONTAINER_RUNTIME")
+	if containerRuntime == "" {
+		containerRuntime = "podman"
+	}
+}
+
+// Building
+// --------
+type Build mg.Namespace
+
+// Build Tags
+var (
+	branch        string
+	shortCommitID string
+	version       string
+	buildDate     string
+
+	ldFlags string
+
+	imageOrg string
+)
+
+// init build variables
+func (Build) init() error {
+	// Build flags
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchBytes, err := branchCmd.Output()
+	if err != nil {
+		panic(fmt.Errorf("getting git branch: %w", err))
+	}
+	branch = strings.TrimSpace(string(branchBytes))
+
+	shortCommitIDCmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	shortCommitIDBytes, err := shortCommitIDCmd.Output()
+	if err != nil {
+		panic(fmt.Errorf("getting git short commit id"))
+	}
+	shortCommitID = strings.TrimSpace(string(shortCommitIDBytes))
+
+	version = strings.TrimSpace(os.Getenv("VERSION"))
+	if len(version) == 0 {
+		version = shortCommitID
+	}
+
+	buildDate = fmt.Sprint(time.Now().UTC().Unix())
+	ldFlags = fmt.Sprintf(`-X %s/internal/version.Version=%s`+
+		`-X %s/internal/version.Branch=%s`+
+		`-X %s/internal/version.Commit=%s`+
+		`-X %s/internal/version.BuildDate=%s`,
+		module, version,
+		module, branch,
+		module, shortCommitID,
+		module, buildDate,
+	)
+
+	imageOrg = os.Getenv("IMAGE_ORG")
+	if len(imageOrg) == 0 {
+		imageOrg = defaultImageOrg
+	}
+
+	return nil
+}
+
+// Builds binaries from /cmd directory.
+func (Build) cmd(cmd, goos, goarch string) error {
+	mg.Deps(Build.init)
+
+	env := map[string]string{
+		"GOFLAGS":     "",
+		"CGO_ENABLED": "0",
+		"LDFLAGS":     ldFlags,
+	}
+
+	bin := path.Join("bin", cmd)
+	if len(goos) != 0 && len(goarch) != 0 {
+		// change bin path to point to a sudirectory when cross compiling
+		bin = path.Join("bin", goos+"_"+goarch, cmd)
+		env["GOOS"] = goos
+		env["GOARCH"] = goarch
+	}
+
+	if err := sh.RunWithV(
+		env,
+		"go", "build", "-v", "-o", bin, "./cmd/"+cmd+"/main.go",
+	); err != nil {
+		return fmt.Errorf("compiling cmd/%s: %w", cmd, err)
+	}
+	return nil
+}
+
+// Default build target for CI/CD
+func (Build) All() {
+	mg.Deps(
+		mg.F(Build.cmd, "iot-operator-manager", "linux", "amd64"),
+		mg.F(Build.cmd, "mage", "", ""),
+	)
+}
+
+func (Build) BuildImages() {
+	mg.Deps(
+		mg.F(Build.ImageBuild, "iot-operator-manager"),
+	)
+}
+
+func (Build) PushImages() {
+	mg.Deps(
+		mg.F(Build.imagePush, "iot-operator-manager"),
+	)
+}
+
+// Builds the docgen internal tool
+func (Build) Docgen() {
+	mg.Deps(mg.F(Build.cmd, "docgen", "", ""))
+}
+
+func (b Build) ImageBuild(cmd string) error {
+	// clean/prepare cache directory
+	imageCacheDir := path.Join(cacheDir, "image", cmd)
+	if err := os.RemoveAll(imageCacheDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting image cache: %w", err)
+	}
+	if err := os.Remove(imageCacheDir + ".tar"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("deleting image cache: %w", err)
+	}
+	if err := os.MkdirAll(imageCacheDir, os.ModePerm); err != nil {
+		return fmt.Errorf("create image cache dir: %w", err)
+	}
+
+	mg.Deps(
+		mg.F(Build.cmd, cmd, "linux", "amd64"),
+	)
+	return b.buildGenericImage(cmd, imageCacheDir)
+}
+
+// generic image build function, when the image just relies on
+// a static binary build from cmd/*
+func (Build) buildGenericImage(cmd, imageCacheDir string) error {
+	imageTag := imageURL(cmd)
+	for _, command := range [][]string{
+		// Copy files for build environment
+		{"cp", "-a",
+			path.Join("bin/linux_amd64", cmd),
+			path.Join(imageCacheDir, cmd)},
+		{"cp", "-a",
+			path.Join("config/container", cmd+".Containerfile"),
+			path.Join(imageCacheDir, "Containerfile")},
+		{"cp", "-a",
+			"config/container/passwd",
+			path.Join(imageCacheDir + "/passwd")},
+
+		// Build image!
+		{containerRuntime, "build", "-t", imageTag, imageCacheDir},
+		{containerRuntime, "image", "save",
+			"-o", imageCacheDir + ".tar", imageTag},
+	} {
+		if err := sh.Run(command[0], command[1:]...); err != nil {
+			return fmt.Errorf("running %q: %w", strings.Join(command, " "), err)
+		}
+	}
+	return nil
+}
+
+func (Build) imagePush(imageName string) error {
+	mg.Deps(
+		mg.F(Build.ImageBuild, imageName),
+	)
+
+	// Login to container registry when running on AppSRE Jenkins.
+	if _, ok := os.LookupEnv("JENKINS_HOME"); ok {
+		log.Println("running in Jenkins, calling container runtime login")
+		if err := sh.Run(containerRuntime,
+			"login", "-u="+os.Getenv("QUAY_USER"),
+			"-p="+os.Getenv("QUAY_TOKEN"), "quay.io"); err != nil {
+			return fmt.Errorf("registry login: %w", err)
+		}
+	}
+
+	if err := sh.Run(containerRuntime, "push", imageURL(imageName)); err != nil {
+		return fmt.Errorf("pushing image: %w", err)
+	}
+
+	return nil
+}
+
+func imageURL(name string) string {
+	envvar := strings.ReplaceAll(strings.ToUpper(name), "-", "_") + "_IMAGE"
+	if url := os.Getenv(envvar); len(url) != 0 {
+		return url
+	}
+	return imageOrg + "/" + name + ":" + version
+}
+
+// Code Generators
+// ---------------
+type Generate mg.Namespace
+
+func (Generate) All() {
+	mg.Deps(
+		Generate.code,
+		Generate.docs,
+	)
+}
+
+func (Generate) Deploy() error {
+	mg.Deps(Build.init)
+
+	// Replace image
+	iotOperatorDeployment := &appsv1.Deployment{}
+
+	deployTemplateBytes, err := ioutil.ReadFile(path.Join(workDir, "config", "deploy", "deployment.yaml.tpl"))
+	if err != nil {
+		return fmt.Errorf("reading deployment.yaml.tpl: %w", err)
+	}
+	if err := yaml.Unmarshal(deployTemplateBytes, iotOperatorDeployment); err != nil {
+		return fmt.Errorf("unmarshal deployment.yaml.tpl: %w", err)
+	}
+
+	iotOperatorManagerImage := os.Getenv("iot_OPERATOR_MANAGER_IMAGE")
+	if len(iotOperatorManagerImage) == 0 {
+		iotOperatorManagerImage = imageURL("iot-operator-manager")
+	}
+	for i := range iotOperatorDeployment.Spec.Template.Spec.Containers {
+		container := &iotOperatorDeployment.Spec.Template.Spec.Containers[i]
+
+		switch container.Name {
+		case "manager":
+			container.Image = iotOperatorManagerImage
+		}
+	}
+
+	// Write
+	deployBytes, err := yaml.Marshal(iotOperatorDeployment)
+	if err != nil {
+		return fmt.Errorf("marshalling iot-operator-manager deployment: %w", err)
+	}
+	if err := ioutil.WriteFile(path.Join(workDir, "config", "deploy", "deployment.yaml"), deployBytes, os.ModePerm); err != nil {
+		return fmt.Errorf("writing deployment.yaml: %w", err)
+	}
+
+	return nil
+}
+
+func (Generate) code() error {
+	mg.Deps(Dependency.ControllerGen)
+
+	manifestsCmd := exec.Command("controller-gen",
+		"crd:crdVersions=v1", "rbac:roleName=addon-operator-manager",
+		"paths=./...", "output:crd:artifacts:config=../config/deploy")
+	manifestsCmd.Dir = workDir + "/apis"
+	if err := manifestsCmd.Run(); err != nil {
+		return fmt.Errorf("generating kubernetes manifests: %w", err)
+	}
+
+	// code gen
+	codeCmd := exec.Command("controller-gen", "object", "paths=./...")
+	codeCmd.Dir = workDir + "/apis"
+	if err := codeCmd.Run(); err != nil {
+		return fmt.Errorf("generating deep copy methods: %w", err)
+	}
+
+	// patching generated code to stay go 1.16 output compliant
+	// https://golang.org/doc/go1.17#gofmt
+	// @TODO: remove this when we move to go 1.17"
+	// otherwise our ci will fail because of changed files"
+	// this removes the line '//go:build !ignore_autogenerated'"
+	findArgs := []string{".", "-name", "zz_generated.deepcopy.go", "-exec",
+		"sed", "-i", `/\/\/go:build !ignore_autogenerated/d`, "{}", ";"}
+
+	// The `-i` flag works a bit differenly on MacOS (I don't know why.)
+	// See - https://stackoverflow.com/a/19457213
+	if goruntime.GOOS == "darwin" {
+		findArgs = []string{".", "-name", "zz_generated.deepcopy.go", "-exec",
+			"sed", "-i", "", "-e", `/\/\/go:build !ignore_autogenerated/d`, "{}", ";"}
+	}
+	if err := sh.Run("find", findArgs...); err != nil {
+		return fmt.Errorf("removing go:build annotation: %w", err)
+	}
+
+	return nil
+}
+
+func (Generate) docs() error {
+	mg.Deps(Build.Docgen)
+
+	return sh.Run("./hack/docgen.sh")
+}
+
+// Testing and Linting
+// -------------------
+type Test mg.Namespace
+
+func (Test) Lint() error {
+	mg.Deps(
+		Dependency.GolangciLint,
+		Generate.All,
+	)
+
+	for _, cmd := range [][]string{
+		{"go", "fmt", "./..."},
+		{"bash", "./hack/validate-directory-clean.sh"},
+		{"golangci-lint", "run", "./...", "--deadline=15m"},
+	} {
+		if err := sh.RunV(cmd[0], cmd[1:]...); err != nil {
+			return fmt.Errorf("running %q: %w", strings.Join(cmd, " "), err)
+		}
+	}
+	return nil
+}
+
+// Runs unittests.
+func (Test) Unit() error {
+	return sh.RunWithV(map[string]string{
+		// needed to enable race detector -race
+		"CGO_ENABLED": "1",
+	}, "go", "test", "-cover", "-v", "-race", "./internal/...", "./cmd/...")
+}
+
+// Dependencies
+// ------------
+
+// Dependency Versions
+const (
+	controllerGenVersion = "0.6.2"
+	kindVersion          = "0.11.1"
+	yqVersion            = "4.12.0"
+	goimportsVersion     = "0.1.5"
+	golangciLintVersion  = "1.43.0"
+	helmVersion          = "3.7.2"
+)
+
+type Dependency mg.Namespace
+
+func (d Dependency) All() {
+	mg.Deps(
+		Dependency.Kind,
+		Dependency.ControllerGen,
+		Dependency.YQ,
+		Dependency.Goimports,
+		Dependency.GolangciLint,
+		Dependency.Helm,
+	)
+}
+
+// Ensure Kind dependency - Kubernetes in Docker (or Podman)
+func (d Dependency) Kind() error {
+	return depsDir.GoInstall("kind",
+		"sigs.k8s.io/kind", kindVersion)
+}
+
+// Ensure controller-gen - kubebuilder code and manifest generator.
+func (d Dependency) ControllerGen() error {
+	return depsDir.GoInstall("controller-gen",
+		"sigs.k8s.io/controller-tools/cmd/controller-gen", controllerGenVersion)
+}
+
+// Ensure yq - jq but for Yaml, written in Go.
+func (d Dependency) YQ() error {
+	return depsDir.GoInstall("yq",
+		"github.com/mikefarah/yq/v4", yqVersion)
+}
+
+func (d Dependency) Goimports() error {
+	return depsDir.GoInstall("go-imports",
+		"golang.org/x/tools/cmd/goimports", goimportsVersion)
+}
+
+func (d Dependency) GolangciLint() error {
+	return depsDir.GoInstall("golangci-lint",
+		"github.com/golangci/golangci-lint/cmd/golangci-lint", golangciLintVersion)
+}
+
+func (d Dependency) Helm() error {
+	return depsDir.GoInstall("helm", "helm.sh/helm/v3/cmd/helm", helmVersion)
+}

@@ -1,0 +1,10 @@
+apiVersion: iot.thetechnick.ninja/v1alpha1
+kind: RollerShutter
+metadata:
+  name: living-room
+  namespace: default
+spec:
+  deviceType: Shelly25Roller
+  endpoint:
+    url: http://192.168.5.4/
+  position: 100
