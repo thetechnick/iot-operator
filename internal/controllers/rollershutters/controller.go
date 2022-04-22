@@ -66,7 +66,7 @@ func (r *RollerShutterReconciler) Reconcile(
 		return res, fmt.Errorf("updating RollerShutter status: %w", err)
 	}
 
-	if rollerShutter.Status.Position == rollerShutter.Spec.Position {
+	if rollerShutter.Status.Phase == iotv1alpha1.RollerShutterPhaseIdle {
 		// always get a new status every now and then
 		res.RequeueAfter = r.DefaultRequeueInterval
 	} else {
