@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	iotapis "github.com/thetechnick/iot-operator/apis"
+	"github.com/thetechnick/iot-operator/internal/controllers/rollershutterrequests"
 	"github.com/thetechnick/iot-operator/internal/controllers/rollershutters"
 )
 
@@ -57,14 +58,24 @@ func parseFlags() *options {
 func initReconcilers(mgr ctrl.Manager) error {
 	rollerShutterReconciler := &rollershutters.RollerShutterReconciler{
 		Client:                 mgr.GetClient(),
-		Log:                    ctrl.Log.WithName("controllers").WithName("Addon"),
+		Log:                    ctrl.Log.WithName("controllers").WithName("RollerShutter"),
 		Scheme:                 mgr.GetScheme(),
 		DefaultRequeueInterval: time.Second * 30,
 		MovingRequeueInterval:  time.Second * 2,
 	}
 
 	if err := rollerShutterReconciler.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create Addon controller: %w", err)
+		return fmt.Errorf("unable to create RollerShutter controller: %w", err)
+	}
+
+	rollerShutterRequestReconciler := &rollershutterrequests.RollerShutterRequestReconciler{
+		Client: mgr.GetClient(),
+		Log:    ctrl.Log.WithName("controllers").WithName("RollerShutterRequest"),
+		Scheme: mgr.GetScheme(),
+	}
+
+	if err := rollerShutterRequestReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create RollerShutterRequest controller: %w", err)
 	}
 	return nil
 }

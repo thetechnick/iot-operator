@@ -6,14 +6,14 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.6.2
   creationTimestamp: null
-  name: rollershutters.iot.thetechnick.ninja
+  name: rollershutterrequests.iot.thetechnick.ninja
 spec:
   group: iot.thetechnick.ninja
   names:
-    kind: RollerShutter
-    listKind: RollerShutterList
-    plural: rollershutters
-    singular: rollershutter
+    kind: RollerShutterRequest
+    listKind: RollerShutterRequestList
+    plural: rollershutterrequests
+    singular: rollershutterrequest
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -44,20 +44,21 @@ spec:
             type: object
           spec:
             properties:
-              deviceType:
-                description: Endpoint device type.
-                type: string
-              endpoint:
+              position:
+                description: Desired position for the shutter.
+                type: integer
+              rollerShutter:
+                description: LocalObjectReference contains enough information to let
+                  you locate the referenced object inside the same namespace.
                 properties:
-                  url:
-                    description: URL to contact the device under.
+                  name:
+                    description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                      TODO: Add other useful fields. apiVersion, kind, uid?'
                     type: string
-                required:
-                - url
                 type: object
             required:
-            - deviceType
-            - endpoint
+            - position
+            - rollerShutter
             type: object
           status:
             properties:
@@ -138,16 +139,6 @@ spec:
                 type: integer
               phase:
                 type: string
-              position:
-                description: Recorded position in percentage open. 100 = completely
-                  open, 0 = completely closed.
-                type: integer
-              power:
-                description: Power consumption in Watts.
-                type: integer
-            required:
-            - position
-            - power
             type: object
         type: object
     served: true

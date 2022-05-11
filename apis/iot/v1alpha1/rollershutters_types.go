@@ -21,8 +21,6 @@ type RollerShutterSpec struct {
 	// Endpoint device type.
 	DeviceType string                `json:"deviceType"`
 	Endpoint   RollerShutterEndpoint `json:"endpoint"`
-	// Desired position for the shutter.
-	Position int `json:"position"`
 }
 
 type RollerShutterEndpoint struct {
@@ -46,8 +44,6 @@ type RollerShutterStatus struct {
 const (
 	// Condition indicating whether the device can be contacted
 	RollerShutterReachable = "Reachable"
-	// Condition indicating whether the shutter is at the commanded position
-	RollerShutterAtPosition = "AtPosition"
 )
 
 type RollerShutterPhase string

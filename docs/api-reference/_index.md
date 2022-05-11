@@ -11,10 +11,48 @@ The IoT Operator APIs are an extension of the [Kubernetes API](https://kubernete
 
 The `iot.thetechnick.ninja` API group in contains all IoT related API objects.
 
+* [RollerShutterRequest](#rollershutterrequestiotmanagedopenshiftiov1alpha1)
+	* [RollerShutterRequestSpec](#rollershutterrequestspeciotmanagedopenshiftiov1alpha1)
+	* [RollerShutterRequestStatus](#rollershutterrequeststatusiotmanagedopenshiftiov1alpha1)
 * [RollerShutter](#rollershutteriotmanagedopenshiftiov1alpha1)
 	* [RollerShutterEndpoint](#rollershutterendpointiotmanagedopenshiftiov1alpha1)
 	* [RollerShutterSpec](#rollershutterspeciotmanagedopenshiftiov1alpha1)
 	* [RollerShutterStatus](#rollershutterstatusiotmanagedopenshiftiov1alpha1)
+
+### RollerShutterRequest.iot.managed.openshift.io/v1alpha1
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| metadata |  | [metav1.ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.22/#objectmeta-v1-meta) | false |
+| spec |  | [RollerShutterRequestSpec.iot.managed.openshift.io/v1alpha1](#rollershutterrequestspeciotmanagedopenshiftiov1alpha1) | false |
+| status |  | [RollerShutterRequestStatus.iot.managed.openshift.io/v1alpha1](#rollershutterrequeststatusiotmanagedopenshiftiov1alpha1) | false |
+
+[Back to Group]()
+
+### RollerShutterRequestSpec.iot.managed.openshift.io/v1alpha1
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| position | Desired position for the shutter. | int.iot.managed.openshift.io/v1alpha1 | true |
+| rollerShutter |  | corev1.LocalObjectReference | true |
+
+[Back to Group]()
+
+### RollerShutterRequestStatus.iot.managed.openshift.io/v1alpha1
+
+
+
+| Field | Description | Scheme | Required |
+| ----- | ----------- | ------ | -------- |
+| observedGeneration | The most recent generation observed by the controller. | int64 | false |
+| conditions | Conditions is a list of status conditions ths object is in. | []metav1.Condition | false |
+| phase |  | RollerShutterRequestPhase.iot.managed.openshift.io/v1alpha1 | false |
+
+[Back to Group]()
 
 ### RollerShutter.iot.managed.openshift.io/v1alpha1
 
@@ -46,7 +84,6 @@ The `iot.thetechnick.ninja` API group in contains all IoT related API objects.
 | ----- | ----------- | ------ | -------- |
 | deviceType | Endpoint device type. | string | true |
 | endpoint |  | [RollerShutterEndpoint.iot.managed.openshift.io/v1alpha1](#rollershutterendpointiotmanagedopenshiftiov1alpha1) | true |
-| position | Desired position for the shutter. | int.iot.managed.openshift.io/v1alpha1 | true |
 
 [Back to Group]()
 

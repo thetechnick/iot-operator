@@ -1,0 +1,9 @@
+apiVersion: iot.thetechnick.ninja/v1alpha1
+kind: RollerShutterRequest
+metadata:
+  generateName: living-room-
+  namespace: default
+spec:
+  rollerShutter:
+    name: living-room
+  position: 100
